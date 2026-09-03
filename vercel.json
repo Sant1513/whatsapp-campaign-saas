@@ -1,0 +1,5 @@
+{
+  "buildCommand": "npx prisma db push --skip-generate && npm run build",
+  "installCommand": "npm install",
+  "framework": "nextjs"
+}
