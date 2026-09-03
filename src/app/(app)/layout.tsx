@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { redirect } from "next/navigation";
 import { requireTenant, listMemberships } from "@/lib/tenant";
 import { Sidebar } from "@/components/Sidebar";

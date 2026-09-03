@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { prisma } from "@/lib/db";
 import { requireTenant } from "@/lib/tenant";
 import { env } from "@/lib/env";

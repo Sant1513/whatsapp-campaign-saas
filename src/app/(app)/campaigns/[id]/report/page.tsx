@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { requireTenant } from "@/lib/tenant";
 import { notFound } from "next/navigation";
 import { ReportView } from "@/components/ReportView";

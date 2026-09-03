@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { notFound } from "next/navigation";
 import { requireTenant } from "@/lib/tenant";
 import { CampaignBuilder } from "@/components/CampaignBuilder";

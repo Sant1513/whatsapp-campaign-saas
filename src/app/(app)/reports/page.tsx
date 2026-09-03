@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import Link from "next/link";
 import { requireTenant } from "@/lib/tenant";
 import { StatusBadge } from "@/components/StatusBadge";
