@@ -1,0 +1,45 @@
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Environment — NEVER commit real keys
+.env
+.env.local
+.env.production
+.env*.local
+
+# Demo / local database (PGlite data directory)
+.pgdata-lite/
+*.db
+*.db-shm
+*.db-wal
+
+# Local file storage
+.storage/
+
+# Prisma generated client (regenerated on install)
+# Keep schema.prisma but not the generated client if desired
+# prisma/generated/
+
+# Build artifacts
+dist/
+build/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/settings.json
+.idea/
+*.swp
+
+# Logs
+*.log
+npm-debug.log*
+
+# TypeScript
+*.tsbuildinfo

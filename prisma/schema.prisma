@@ -1,0 +1,507 @@
+// WhatsApp Campaign Management SaaS — data model
+// See ARCHITECTURE.md §4 and spec §45/§46. Every tenant-owned row carries organizationId.
+
+generator client {
+  provider        = "prisma-client-js"
+  // driverAdapters enables the PGlite adapter used for the no-install local demo.
+  previewFeatures = ["driverAdapters"]
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ---------------------------------------------------------------------------
+// Tenancy, users, RBAC
+// ---------------------------------------------------------------------------
+
+model Organization {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  timezone  String   @default("Asia/Kolkata")
+  status    OrgStatus @default(ACTIVE)
+  // Org-level policy: whether variable fallbacks are allowed by default (spec §13)
+  allowFallbackByDefault Boolean @default(true)
+  retentionDays          Int     @default(365) // spec §68
+  members       OrganizationUser[]
+  serriConnections SerriConnection[]
+  campaignDefinitions CampaignDefinition[]
+  templates     Template[]
+  contacts      Contact[]
+  campaigns     Campaign[]
+  mediaAssets   MediaAsset[]
+  imports       Import[]
+  scheduledJobs ScheduledJob[]
+  auditLogs     AuditLog[]
+  messages      Message[]
+  createdAt     DateTime @default(now()) @map("created_at")
+  updatedAt     DateTime @updatedAt @map("updated_at")
+
+  @@map("organizations")
+}
+
+enum OrgStatus {
+  ACTIVE
+  SUSPENDED
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  name         String
+  passwordHash String   @map("password_hash")
+  isSuperAdmin Boolean  @default(false) @map("is_super_admin")
+  status       UserStatus @default(ACTIVE)
+  memberships  OrganizationUser[]
+  auditLogs    AuditLog[]
+  createdAt    DateTime @default(now()) @map("created_at")
+  updatedAt    DateTime @updatedAt @map("updated_at")
+
+  @@map("users")
+}
+
+enum UserStatus {
+  ACTIVE
+  DISABLED
+}
+
+model OrganizationUser {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  userId         String   @map("user_id")
+  role           Role
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  user           User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@unique([organizationId, userId])
+  @@index([userId])
+  @@map("organization_users")
+}
+
+enum Role {
+  ORG_ADMIN
+  CAMPAIGN_MANAGER
+  VIEWER
+}
+
+// ---------------------------------------------------------------------------
+// Integrations: Serri connections + campaign definitions (spec §8, §9)
+// ---------------------------------------------------------------------------
+
+model SerriConnection {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  endpoint       String   @default("https://backend.api-wa.co/campaign/serri-india/api/v2")
+  // API key encrypted at rest (AES-256-GCM). Never returned to client. (spec §8, §44)
+  apiKeyCipher   String   @map("api_key_cipher")
+  apiKeyLast4    String   @map("api_key_last4")
+  defaultUserName String  @map("default_user_name")
+  defaultSource  String   @map("default_source")
+  metadata       Json     @default("{}")
+  status         ConnectionStatus @default(ACTIVE)
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaigns      Campaign[]
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([organizationId])
+  @@map("serri_connections")
+}
+
+enum ConnectionStatus {
+  ACTIVE
+  INACTIVE
+}
+
+// The technical Serri payload contract. Extensible so new cURLs are data, not code. (spec §9, §77)
+model CampaignDefinition {
+  id                 String   @id @default(cuid())
+  organizationId     String   @map("organization_id")
+  name               String   // human label
+  serriCampaignName  String   @map("serri_campaign_name") // e.g. zaza1_clone2_1767876912
+  method             String   @default("POST")
+  messageType        MessageType @default(TEXT)
+  // JSON describing required/optional fields, variables, media requirements, fallbacks.
+  // See lib/providers/serri for the shape (DefinitionSpec).
+  spec               Json     @default("{}")
+  status             DefinitionStatus @default(ACTIVE)
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  templateVersions   TemplateVersion[]
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, serriCampaignName])
+  @@index([organizationId])
+  @@map("campaign_definitions")
+}
+
+enum DefinitionStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+enum MessageType {
+  TEXT
+  IMAGE
+  IMAGE_CAPTION
+  AUDIO
+  VIDEO
+  DOCUMENT
+  TEXT_IMAGE
+  TEXT_AUDIO
+  TEXT_VIDEO
+  TEXT_DOCUMENT
+  MULTI_MEDIA
+}
+
+// ---------------------------------------------------------------------------
+// Templates + versions + variables (spec §10, §11, §43)
+// ---------------------------------------------------------------------------
+
+model Template {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String
+  description    String   @default("")
+  status         TemplateStatus @default(ACTIVE)
+  currentVersionId String? @unique @map("current_version_id")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  versions       TemplateVersion[] @relation("TemplateVersions")
+  currentVersion TemplateVersion?  @relation("CurrentVersion", fields: [currentVersionId], references: [id])
+  createdBy      String   @map("created_by")
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@index([organizationId])
+  @@map("templates")
+}
+
+enum TemplateStatus {
+  ACTIVE
+  ARCHIVED
+}
+
+model TemplateVersion {
+  id                   String   @id @default(cuid())
+  organizationId       String   @map("organization_id")
+  templateId           String   @map("template_id")
+  version              Int
+  messageType          MessageType
+  bodyText             String   @default("") @map("body_text")
+  // Media spec at template level (which media slots exist, required?, source var). JSON.
+  mediaSpec            Json     @default("{}") @map("media_spec")
+  campaignDefinitionId String   @map("campaign_definition_id")
+  createdBy            String   @map("created_by")
+  template             Template @relation("TemplateVersions", fields: [templateId], references: [id], onDelete: Cascade)
+  currentOf            Template? @relation("CurrentVersion")
+  campaignDefinition   CampaignDefinition @relation(fields: [campaignDefinitionId], references: [id])
+  variables            TemplateVariable[]
+  campaigns            Campaign[]
+  messages             Message[]
+  createdAt            DateTime @default(now()) @map("created_at")
+
+  @@unique([templateId, version])
+  @@index([organizationId])
+  @@map("template_versions")
+}
+
+model TemplateVariable {
+  id                String   @id @default(cuid())
+  templateVersionId String   @map("template_version_id")
+  name              String   // without the $, e.g. "FirstName"
+  required          Boolean  @default(true)
+  fallbackValue     String?  @map("fallback_value")
+  fallbackAllowed   Boolean  @default(true) @map("fallback_allowed") // org-admin controlled (spec §13)
+  usedIn            String   @default("text") // text|caption|url|media_url|filename|button
+  templateVersion   TemplateVersion @relation(fields: [templateVersionId], references: [id], onDelete: Cascade)
+
+  @@unique([templateVersionId, name])
+  @@map("template_variables")
+}
+
+// ---------------------------------------------------------------------------
+// Contacts + custom fields (spec §35, §36)
+// ---------------------------------------------------------------------------
+
+model Contact {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  name           String   @default("")
+  phone          String   // stored E.164 (digits, no +)
+  email          String?
+  tags           String[] @default([])
+  customFields   Json     @default("{}") @map("custom_fields")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  recipients     CampaignRecipient[]
+  messages       Message[]
+  createdAt      DateTime @default(now()) @map("created_at")
+  updatedAt      DateTime @updatedAt @map("updated_at")
+
+  @@unique([organizationId, phone])
+  @@index([organizationId])
+  @@map("contacts")
+}
+
+// ---------------------------------------------------------------------------
+// Campaigns (spec §22, §31, §37)
+// ---------------------------------------------------------------------------
+
+model Campaign {
+  id                 String   @id @default(cuid())
+  organizationId     String   @map("organization_id")
+  name               String
+  description        String   @default("")
+  status             CampaignStatus @default(DRAFT)
+  templateVersionId  String?  @map("template_version_id")
+  serriConnectionId  String?  @map("serri_connection_id")
+  // variable -> csv column mapping saved on the campaign (spec §12)
+  fieldMapping       Json     @default("{}") @map("field_mapping")
+  allowDuplicates    Boolean  @default(false) @map("allow_duplicates")
+  scheduledAt        DateTime? @map("scheduled_at")
+  timezone           String   @default("Asia/Kolkata")
+  // preflight result snapshot; launch requires ok=true (spec §10-R10, §52)
+  preflight          Json?
+  testStatus         String?  @map("test_status")
+  duplicatedFromId   String?  @map("duplicated_from_id")
+  createdBy          String   @map("created_by")
+
+  organization       Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  templateVersion    TemplateVersion? @relation(fields: [templateVersionId], references: [id])
+  serriConnection    SerriConnection? @relation(fields: [serriConnectionId], references: [id])
+  imports            Import[]
+  recipients         CampaignRecipient[]
+  messages           Message[]
+  scheduledJobs      ScheduledJob[]
+  createdAt          DateTime @default(now()) @map("created_at")
+  updatedAt          DateTime @updatedAt @map("updated_at")
+
+  @@index([organizationId, status, createdAt])
+  @@map("campaigns")
+}
+
+enum CampaignStatus {
+  DRAFT
+  VALIDATING
+  READY
+  SCHEDULED
+  PREPARING
+  SENDING
+  PAUSED
+  COMPLETED
+  PARTIALLY_COMPLETED
+  FAILED
+  CANCELLED
+}
+
+// A recipient materialized for a campaign (eligible or excluded) (spec §20, §21)
+model CampaignRecipient {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  campaignId     String   @map("campaign_id")
+  contactId      String?  @map("contact_id")
+  rowNumber      Int?     @map("row_number")
+  destination    String   // resolved phone (E.164 digits)
+  name           String   @default("")
+  rawData        Json     @default("{}") @map("raw_data")           // original CSV row
+  resolvedVariables Json  @default("{}") @map("resolved_variables") // after mapping+fallback
+  eligible       Boolean  @default(false)
+  exclusionReason String? @map("exclusion_reason")   // reason code
+  exclusionField String?  @map("exclusion_field")
+  exclusionValue String?  @map("exclusion_value")
+
+  campaign       Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  contact        Contact? @relation(fields: [contactId], references: [id])
+  messages       Message[]
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([campaignId, eligible])
+  @@index([organizationId])
+  @@map("campaign_recipients")
+}
+
+// ---------------------------------------------------------------------------
+// Imports + validation errors (spec §17, §18, §21)
+// ---------------------------------------------------------------------------
+
+model Import {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  campaignId     String?  @map("campaign_id")
+  filename       String
+  storageKey     String   @map("storage_key")
+  headers        String[] @default([])
+  totalRows      Int      @default(0) @map("total_rows")
+  eligibleRows   Int      @default(0) @map("eligible_rows")
+  excludedRows   Int      @default(0) @map("excluded_rows")
+  status         ImportStatus @default(PENDING)
+  summary        Json     @default("{}") // per-reason counts
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign       Campaign? @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  rows           ImportRow[]
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId])
+  @@map("imports")
+}
+
+enum ImportStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+}
+
+model ImportRow {
+  id        String  @id @default(cuid())
+  importId  String  @map("import_id")
+  rowNumber Int     @map("row_number")
+  data      Json    @default("{}")
+  eligible  Boolean @default(false)
+  import    Import  @relation(fields: [importId], references: [id], onDelete: Cascade)
+  errors    ValidationError[]
+
+  @@index([importId])
+  @@map("import_rows")
+}
+
+model ValidationError {
+  id        String @id @default(cuid())
+  importRowId String @map("import_row_id")
+  reason    String // reason code
+  field     String?
+  value     String?
+  importRow ImportRow @relation(fields: [importRowId], references: [id], onDelete: Cascade)
+
+  @@index([importRowId])
+  @@map("validation_errors")
+}
+
+// ---------------------------------------------------------------------------
+// Messages + attempts (spec §33, §34, §46)
+// ---------------------------------------------------------------------------
+
+model Message {
+  id                  String   @id @default(cuid())
+  organizationId      String   @map("organization_id")
+  campaignId          String?  @map("campaign_id")
+  campaignRecipientId String?  @map("campaign_recipient_id")
+  contactId           String?  @map("contact_id")
+  templateId          String?  @map("template_id")
+  templateVersionId   String?  @map("template_version_id")
+
+  destination         String
+  resolvedVariables   Json     @default("{}") @map("resolved_variables")
+  // exact Serri body (apiKey stored as a redacted reference, never the secret) (spec §46, §70-R4)
+  resolvedPayload     Json     @default("{}") @map("resolved_payload")
+  mediaSnapshot       Json     @default("{}") @map("media_snapshot")
+
+  status              MessageStatus @default(PENDING)
+  failureReason       String?  @map("failure_reason")
+  providerRef         String?  @map("provider_ref")
+  attemptCount        Int      @default(0) @map("attempt_count")
+  isTest              Boolean  @default(false) @map("is_test")
+
+  // Idempotency guard: BullMQ jobId == idempotencyKey (spec §50)
+  idempotencyKey      String   @unique @map("idempotency_key")
+
+  organization        Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign            Campaign? @relation(fields: [campaignId], references: [id], onDelete: SetNull)
+  campaignRecipient   CampaignRecipient? @relation(fields: [campaignRecipientId], references: [id], onDelete: SetNull)
+  contact             Contact? @relation(fields: [contactId], references: [id])
+  templateVersion     TemplateVersion? @relation(fields: [templateVersionId], references: [id])
+  attempts            MessageAttempt[]
+
+  createdAt           DateTime @default(now()) @map("created_at")
+  queuedAt            DateTime? @map("queued_at")
+  sentAt              DateTime? @map("sent_at")
+  deliveredAt         DateTime? @map("delivered_at")
+  readAt              DateTime? @map("read_at")
+  failedAt            DateTime? @map("failed_at")
+
+  @@index([organizationId, status, createdAt])
+  @@index([campaignId, status])
+  @@index([contactId, createdAt])
+  @@map("messages")
+}
+
+enum MessageStatus {
+  PENDING
+  PROCESSING
+  SENT
+  DELIVERED
+  READ
+  FAILED
+  EXCLUDED
+  CANCELLED
+  UNKNOWN
+}
+
+model MessageAttempt {
+  id            String   @id @default(cuid())
+  messageId     String   @map("message_id")
+  attemptNumber Int      @map("attempt_number")
+  outcome       String   // SENT | FAILED | UNKNOWN
+  httpStatus    Int?     @map("http_status")
+  errorClass    String?  @map("error_class") // TRANSIENT | PERMANENT | UNKNOWN
+  responseBody  Json?    @map("response_body") // sanitized, no secrets
+  durationMs    Int?     @map("duration_ms")
+  message       Message  @relation(fields: [messageId], references: [id], onDelete: Cascade)
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  @@index([messageId])
+  @@map("message_attempts")
+}
+
+// ---------------------------------------------------------------------------
+// Media, scheduling, audit (spec §67, §30, §42)
+// ---------------------------------------------------------------------------
+
+model MediaAsset {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  filename       String
+  storageKey     String   @map("storage_key")
+  mimeType       String   @map("mime_type")
+  sizeBytes      Int      @map("size_bytes")
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId])
+  @@map("media_assets")
+}
+
+model ScheduledJob {
+  id             String   @id @default(cuid())
+  organizationId String   @map("organization_id")
+  campaignId     String   @map("campaign_id")
+  runAt          DateTime @map("run_at")
+  status         String   @default("PENDING") // PENDING | FIRED | CANCELLED
+  organization   Organization @relation(fields: [organizationId], references: [id], onDelete: Cascade)
+  campaign       Campaign @relation(fields: [campaignId], references: [id], onDelete: Cascade)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([status, runAt])
+  @@map("scheduled_jobs")
+}
+
+model AuditLog {
+  id             String   @id @default(cuid())
+  organizationId String?  @map("organization_id")
+  userId         String?  @map("user_id")
+  action         String
+  entityType     String?  @map("entity_type")
+  entityId       String?  @map("entity_id")
+  metadata       Json     @default("{}") // never secrets (spec §42)
+  ip             String?
+  userAgent      String?  @map("user_agent")
+  organization   Organization? @relation(fields: [organizationId], references: [id], onDelete: SetNull)
+  user           User?    @relation(fields: [userId], references: [id], onDelete: SetNull)
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  @@index([organizationId, createdAt])
+  @@map("audit_logs")
+}
