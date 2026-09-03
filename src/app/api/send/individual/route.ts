@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { z } from "zod";
 import { route, json } from "@/lib/http";
 import { requireCap } from "@/lib/tenant";

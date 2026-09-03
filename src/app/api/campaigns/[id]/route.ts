@@ -1,3 +1,4 @@
+export const dynamic = "force-dynamic";
 import { route, json } from "@/lib/http";
 import { requireTenant } from "@/lib/tenant";
 
